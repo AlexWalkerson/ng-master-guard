@@ -1,6 +1,6 @@
 import { Injectable, Injector } from '@angular/core';
-import { CanActivate, CanActivateChild, CanLoad, ActivatedRouteSnapshot, RouterStateSnapshot, Route, UrlSegment } from '@angular/router';
-import { Observable, of, from } from 'rxjs';
+import { CanActivate, CanActivateChild, ActivatedRouteSnapshot, RouterStateSnapshot, Data } from '@angular/router';
+import { Observable, from } from 'rxjs';
 
 /**
  * Guard that makes it possible to use sequential chain of async guards
@@ -27,12 +27,12 @@ import { Observable, of, from } from 'rxjs';
  *          },
  */
 @Injectable()
-export class MasterGuard implements CanActivate, CanActivateChild, CanLoad {
+export class MasterGuard implements CanActivate, CanActivateChild {
 
-    private route: ActivatedRouteSnapshot | Route;
+    private route: ActivatedRouteSnapshot;
     private state: RouterStateSnapshot;
-    private segments: UrlSegment[];
-    private executor: 'canActivate' | 'canActivateChild' | 'canLoad';
+    private executor: 'canActivate' | 'canActivateChild';
+    private relation: 'OR' | 'AND' = 'AND';
 
     constructor(private injector: Injector) {}
 
@@ -49,40 +49,53 @@ export class MasterGuard implements CanActivate, CanActivateChild, CanLoad {
         this.state = state;
         return this.middleware();
     }
-
-    public canLoad(route: Route, segments: UrlSegment[]): Promise<boolean> {
-        this.executor = 'canLoad';
-        this.route = route;
-        this.segments = segments;
-        return this.middleware();
-    }
-
-    private get relation(): 'OR' | 'AND'{
-        return (this.route.data && typeof this.route.data.guardsRelation === 'string' && this.route.data.guardsRelation.toUpperCase() === 'OR')? 'OR': 'AND';
-    }
-
+    
     private middleware(): Promise<boolean> {
-        if (!this.route.data || !Array.isArray(this.route.data.guards)) {
+
+        let data = this.findDataWithGuards(this.route);         
+
+        if (!data.guards || !data.guards.length) {
             return Promise.resolve(true);
         }
 
-        return this.executeGuards();
+        if(typeof this.route.data.guardsRelation === 'string') {
+            this.relation = this.route.data.guardsRelation.toUpperCase() === 'OR' ? 'OR': 'AND';
+        } else {
+            this.relation = (data.guardsRelation === 'string' && data.guardsRelation.toUpperCase() === 'OR') ? 'OR': 'AND';
+        }
+
+        return this.executeGuards(data.guards);
+    }
+
+    private findDataWithGuards(route: ActivatedRouteSnapshot): Data {
+
+        if(route.data.guards){
+            return route.data;
+        }
+
+        if( (route.routeConfig.canActivateChild && ~route.routeConfig.canActivateChild.findIndex(guard => this instanceof guard))
+            || (route.routeConfig.canActivate && ~route.routeConfig.canActivate.findIndex(guard => this instanceof guard)) )
+        {            
+            return route.data;
+        }
+
+        return this.findDataWithGuards(route.parent);
     }
 
     //Execute the guards sent in the route data 
-    private executeGuards(guardIndex: number = 0): Promise<boolean> {
-        return this.activateGuard(this.route.data.guards[guardIndex])
-            .then((intermediateResult) => {
-                if(this.relation === 'AND' && !intermediateResult)
+    private executeGuards(guards, guardIndex: number = 0): Promise<boolean> {
+        return this.activateGuard(guards[guardIndex])
+            .then((result) => {
+                if(this.relation === 'AND' && !result)
                     return Promise.resolve(false);
                 
-                if(this.relation === 'OR' && intermediateResult)
+                if(this.relation === 'OR' && result)
                     return Promise.resolve(true);
 
-                if (guardIndex < this.route.data.guards.length - 1) {
-                    return this.executeGuards(guardIndex + 1);
+                if (guardIndex < guards.length - 1) {
+                    return this.executeGuards(guards, guardIndex + 1);
                 } else {
-                    return Promise.resolve(intermediateResult);
+                    return Promise.resolve(result);
                 }
             })
             .catch(() => {
@@ -101,10 +114,6 @@ export class MasterGuard implements CanActivate, CanActivateChild, CanLoad {
 
             case 'canActivateChild':
                 result = guard.canActivateChild(this.route, this.state);
-                break;
-
-            case 'canLoad':
-                result = guard.canLoad(this.route, this.segments);
                 break;
             
             default:
